@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import io
-from typing import Union
+from typing import Union, Optional
 from mcp.server.fastmcp import FastMCP
 import datetime
 import volcenginesdkcore
@@ -319,16 +319,7 @@ def init_client(region: str = None, ctx: Context = None):
 Use this when you need to package multiple files and pass them to other interfaces (e.g., function creation or update) in a base64-encoded ZIP format.
 The input should be a dictionary where keys are filenames and values are file contents in either str or bytes. No files are written to disk.""")
 def create_zip_base64(file_dict: dict[str, Union[str, bytes]]) -> str:
-    zip_buffer = io.BytesIO()
-
-    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-        for filename, content in file_dict.items():
-            info = zipfile.ZipInfo(filename)
-            info.date_time = datetime.datetime.now().timetuple()[:6]
-            info.external_attr = 0o755 << 16
-            zip_file.writestr(info, content)
-
-    zip_bytes = zip_buffer.getvalue()
+    zip_bytes = build_zip_bytes_for_file_dict(file_dict)
     zip_base64 = base64.b64encode(zip_bytes).decode("utf-8")
 
     return zip_base64
@@ -541,49 +532,34 @@ def python_zip_implementation(folder_path: str) -> bytes:
     print(f"Python zip finished, size: {buffer.tell() / 1024 / 1024:.2f} MB")
     return buffer.getvalue()
 
-@mcp.tool(description="""Uploads a code folder to tos and returns the TOS object URL.
-          After it is uploaded, ask the user to release the function again for the changes to take effect.
-Use this when you need to upload a code folder to TOS for a veFaaS function.""")
-def upload_to_tos(region: str, folder_path: str, function_id: str) -> bytes:
+@mcp.tool(description="""
+Uploads code to TOS for a veFaaS function deployment. You can either provide a local folder path or a mapping of filenames to in-memory file content (str or bytes).
+
+- For large or structured projects, it's recommended to use the 'folder_path' parameter to upload a full directory from disk.
+- For lightweight projects, such as single-page web apps or small scripts, you can use 'file_dict' to upload in-memory files directly.
+
+After uploading, remind the user to release the function again for the changes to take effect.
+""")
+def upload_code(region: str, function_id: str, folder_path: Optional[str] = None, file_dict: Optional[dict[str, Union[str, bytes]]] = None) -> bytes:
     region = validate_and_set_region(region)
-    
+
     api_instance = init_client(region, mcp.get_context())
 
-    data, size, error = zip_and_encode_folder(folder_path)
-
-    if error:
-        raise ValueError(f"Error zipping folder: {error}")
-    if not data:
-        raise ValueError("No data returned from zipping folder")
-    if size == 0:
-        raise ValueError("Zipped data size is 0, nothing to upload")
+    if folder_path:
+        data, size, error = zip_and_encode_folder(folder_path)
+        if error:
+            raise ValueError(f"Error zipping folder: {error}")
+        if not data or size == 0:
+            raise ValueError("Zipped folder is empty, nothing to upload")
+    elif file_dict:
+        data = build_zip_bytes_for_file_dict(file_dict)
+        size = len(data)
+        if not data:
+            raise ValueError("No files provided in file_dict, upload aborted.")
+    else:
+        raise ValueError("Either folder_path or file_dict must be provided.")
 
     return upload_code_zip_for_function(api_instance=api_instance, function_id=function_id, code_zip_size=size, zip_bytes=data)
-
-
-@mcp.tool(description="""Uploads multiple in-memory files to TOS and returns the resulting TOS object URL.
-Use this when you have a mapping of filenames to file contents (in str or bytes) that needs to be packaged and uploaded for a veFaaS function.
-After the upload completes, remind the user to release the function again for the changes to take effect.""")
-def upload_code_for_function(region: str, function_id: str, file_dict: dict[str, Union[str, bytes]]) -> bytes:
-    region = validate_and_set_region(region)
-
-    api_instance = init_client(region, mcp.get_context())
-
-    zip_buffer = io.BytesIO()
-
-    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-        for filename, content in file_dict.items():
-            info = zipfile.ZipInfo(filename)
-            info.date_time = datetime.datetime.now().timetuple()[:6]
-            info.external_attr = 0o755 << 16
-            zip_file.writestr(info, content)
-
-    zip_bytes = zip_buffer.getvalue()
-    size = len(zip_bytes)
-
-    if not zip_bytes:
-        raise ValueError("No files provided in file_dict, upload aborted.")
-    return upload_code_zip_for_function(api_instance=api_instance, function_id=function_id, code_zip_size=size, zip_bytes=zip_bytes)
 
 
 def upload_code_zip_for_function(api_instance: object, function_id: str, code_zip_size: int, zip_bytes, ) -> bytes:
@@ -626,3 +602,14 @@ def upload_code_zip_for_function(api_instance: object, function_id: str, code_zi
     except Exception as e:
         error_message = f"Error creating upstream: {str(e)}"
         raise ValueError(error_message)
+
+def build_zip_bytes_for_file_dict(file_dict):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, content in file_dict.items():
+            info = zipfile.ZipInfo(filename)
+            info.date_time = datetime.datetime.now().timetuple()[:6]
+            info.external_attr = 0o755 << 16
+            zip_file.writestr(info, content)
+    zip_bytes = zip_buffer.getvalue()
+    return zip_bytes
