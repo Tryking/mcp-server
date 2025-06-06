@@ -413,7 +413,9 @@ Creates a new VeApig API gateway in the specified region.
 - `name`: Optional custom name for the gateway. If not provided, a random name will be auto-generated.
 - `region`: Target region for gateway creation. Defaults to `cn-beijing`. Supported values include `cn-beijing`, `cn-shanghai`, `cn-guangzhou`, and `ap-southeast-1`.
 
-Note: This is an **asynchronous** operation. After calling this tool, you must use the `list_api_gateways` tool to query the gateway's status. Only when the status is `Running` does the gateway creation complete successfully.
+Note: This is an **asynchronous** operation and may take up to **5 minutes** to complete.  
+After calling this tool, you must use the `list_api_gateways` tool to check the status of the gateway.  
+Only when the status is `Running` does the gateway creation complete successfully.
 """
 )
 def create_api_gateway(name: str = None, region: str = "cn-beijing") -> str:
