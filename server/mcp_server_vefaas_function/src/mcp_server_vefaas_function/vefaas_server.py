@@ -533,20 +533,24 @@ def python_zip_implementation(folder_path: str) -> bytes:
     return buffer.getvalue()
 
 @mcp.tool(description="""
-Uploads code to TOS for a veFaaS function deployment. You can either provide a local folder path or a mapping of filenames to in-memory file content (str or bytes).
+Uploads code to TOS for a veFaaS function deployment.
 
-- For large or structured projects, it's recommended to use the 'folder_path' parameter to upload a full directory from disk.
-- For lightweight projects, such as single-page web apps or small scripts, you can use 'file_dict' to upload in-memory files directly.
+You may provide:
+- 'local_folder_path': for uploading a local code directory (recommended for large or structured projects).
+- 'file_dict': for in-memory code files, suitable for simple or lightweight use cases.
 
-After uploading, remind the user to release the function again for the changes to take effect.
+Note:
+If the MCP Server is deployed remotely (e.g., via SSE), local paths are not accessible. In such cases, use 'file_dict' instead of 'local_folder_path'.
+
+After uploading, remind the user to release the function for changes to take effect.
 """)
-def upload_code(region: str, function_id: str, folder_path: Optional[str] = None, file_dict: Optional[dict[str, Union[str, bytes]]] = None) -> bytes:
+def upload_code(region: str, function_id: str, local_folder_path: Optional[str] = None, file_dict: Optional[dict[str, Union[str, bytes]]] = None) -> bytes:
     region = validate_and_set_region(region)
 
     api_instance = init_client(region, mcp.get_context())
 
-    if folder_path:
-        data, size, error = zip_and_encode_folder(folder_path)
+    if local_folder_path:
+        data, size, error = zip_and_encode_folder(local_folder_path)
         if error:
             raise ValueError(f"Error zipping folder: {error}")
         if not data or size == 0:
@@ -557,7 +561,7 @@ def upload_code(region: str, function_id: str, folder_path: Optional[str] = None
         if not data:
             raise ValueError("No files provided in file_dict, upload aborted.")
     else:
-        raise ValueError("Either folder_path or file_dict must be provided.")
+        raise ValueError("Either local_folder_path or file_dict must be provided.")
 
     return upload_code_zip_for_function(api_instance=api_instance, function_id=function_id, code_zip_size=size, zip_bytes=data)
 
