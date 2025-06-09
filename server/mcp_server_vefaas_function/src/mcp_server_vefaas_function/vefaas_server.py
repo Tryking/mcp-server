@@ -315,14 +315,14 @@ def init_client(region: str = None, ctx: Context = None):
     return volcenginesdkvefaas.VEFAASApi()
 
 
-@mcp.tool(description="""Compresses multiple in-memory files into a single ZIP archive and returns its base64-encoded string.
-Use this when you need to package multiple files and pass them to other interfaces (e.g., function creation or update) in a base64-encoded ZIP format.
-The input should be a dictionary where keys are filenames and values are file contents in either str or bytes. No files are written to disk.""")
-def create_zip_base64(file_dict: dict[str, Union[str, bytes]]) -> str:
-    zip_bytes = build_zip_bytes_for_file_dict(file_dict)
-    zip_base64 = base64.b64encode(zip_bytes).decode("utf-8")
-
-    return zip_base64
+# @mcp.tool(description="""Compresses multiple in-memory files into a single ZIP archive and returns its base64-encoded string.
+# Use this when you need to package multiple files and pass them to other interfaces (e.g., function creation or update) in a base64-encoded ZIP format.
+# The input should be a dictionary where keys are filenames and values are file contents in either str or bytes. No files are written to disk.""")
+# def create_zip_base64(file_dict: dict[str, Union[str, bytes]]) -> str:
+#     zip_bytes = build_zip_bytes_for_file_dict(file_dict)
+#     zip_base64 = base64.b64encode(zip_bytes).decode("utf-8")
+#
+#     return zip_base64
 
 
 @mcp.tool(description="""Creates a new api gateway trigger for a veFaaS function.
@@ -531,7 +531,7 @@ def list_routes(upstream_id: str, region: str = None):
         raise ValueError(f"Authorization failed: {str(e)}")
 
     body = {
-        "UpstreamId": upstream_id
+        "ServiceId": upstream_id
     }
 
     response_body = request("POST", now, {}, {}, ak, sk, token, "ListRoutes", json.dumps(body))
