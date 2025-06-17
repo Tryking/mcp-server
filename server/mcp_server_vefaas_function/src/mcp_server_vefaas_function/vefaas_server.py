@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import io
+import time
 from typing import Union, Optional
 import datetime
 import volcenginesdkcore
@@ -8,7 +9,6 @@ import volcenginesdkvefaas
 from volcenginesdkcore.rest import ApiException
 import random
 import string
-import base64
 import logging
 from .sign import request, get_authorization_credentials
 import json
@@ -706,3 +706,170 @@ def build_zip_bytes_for_file_dict(file_dict):
             zip_file.writestr(info, content)
     zip_bytes = zip_buffer.getvalue()
     return zip_bytes
+
+
+@mcp.tool(description="""
+Deploy a web application to VeFaaS with one command with a random name if no name is provided. 
+`region` specifies the deployment region. Defaults to `cn-beijing`. Supported values: `cn-beijing`, `cn-shanghai`, `cn-guangzhou`, `ap-southeast-1`.
+
+- By default, it serves static files using `python3 -m http.server 8000` (for Python runtimes).
+- The deployed application **must listen on port 8000**, which is the default ingress port used by VeFaaS for native runtimes.
+- For Python web frameworks (e.g., Flask, FastAPI), include a `run.sh` script (e.g., `gunicorn app:app --bind 0.0.0.0:8000`) in the root directory, make it executable (`chmod +x run.sh`), and set `command="bash run.sh"`.
+- For Node.js applications, include a `run.sh` script (e.g., `node index.js`) or directly set `command="node index.js"`; make sure your app listens on port 8000.
+- Provide **either** a local folder path (`local_folder_path`) **or** a file dictionary (`file_dict`), **not both**.
+- The function automatically handles: runtime validation → function creation → code upload → release → gateway creation → trigger binding.
+- Returns the public access URL, along with function and gateway metadata.
+
+Default runtime: `native-python3.12/v1`.  
+For Node.js, set `runtime="native-node20/v1"` and specify the appropriate startup command.
+""")
+def deploy_webapp_to_vefaas(
+    name: str = None,
+    runtime: str = "native-python3.12/v1",
+    command: str = "python3 -m http.server 8000",
+    local_folder_path: str = None,
+    file_dict: dict = None,
+    envs: dict = None,
+    description: str = "MCP integrated deployment function",
+    region: str = "cn-beijing"
+) -> str:
+    validate_runtime(runtime)
+    function_id = create_and_return_function_id(name, region, runtime, command, envs, description)
+    upload_function_code(region, function_id, local_folder_path, file_dict)
+    release_and_wait(function_id, region)
+    api_gateway_id = ensure_api_gateway_created(region)
+    service_id = ensure_gateway_service_created(api_gateway_id, region)
+    return bind_gateway_trigger(function_id, api_gateway_id, service_id, region)
+
+
+def validate_runtime(runtime: str):
+    supported = supported_runtimes()
+    if runtime not in supported:
+        raise ValueError(f"Invalid runtime, supported: {supported}")
+    if not runtime.startswith("native-"):
+        raise ValueError("Web services must use native runtime")
+
+
+def create_and_return_function_id(name, region, runtime, command, envs, description):
+    create_result = create_function(
+        name=name,
+        region=region,
+        runtime=runtime,
+        command=command,
+        envs=envs,
+        description=description
+    )
+    function_id = create_result.split("id ")[-1].strip('"')
+    if not function_id:
+        raise ValueError(f"Function creation failed. {json.dumps(create_result)}")
+    return function_id
+
+
+def upload_function_code(region, function_id, local_folder_path, file_dict):
+    if local_folder_path and file_dict:
+        raise ValueError("Cannot provide both local_folder_path and file_dict")
+    if not local_folder_path and not file_dict:
+        raise ValueError("Must provide either local_folder_path or file_dict")
+    if local_folder_path or file_dict:
+        upload_code(
+            region=region,
+            function_id=function_id,
+            local_folder_path=local_folder_path,
+            file_dict=file_dict
+        )
+
+
+def release_and_wait(function_id, region):
+    start_time = time.time()
+    timeout = 300
+    check_interval = 5
+    release_function(function_id=function_id, region=region)
+    while True:
+        status = get_function_release_status(function_id=function_id, region=region)
+        if status.status in ["Released", "done"]:
+            return
+        elif status.status != "inprogress":
+            raise RuntimeError(f"Release failed: {status}")
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Release timeout after {timeout} seconds, status: {status}")
+        time.sleep(check_interval)
+
+
+def ensure_api_gateway_created(region):
+    response = create_api_gateway(region=region)
+    if 'Result' in response:
+        api_gateway_id = response['Result']['Id']
+        wait_for_api_gateway(api_gateway_id, region)
+    elif response['ResponseMetadata']['Error']['Code'] == "ExceededQuota":
+        gateways = list_api_gateways(region=region)
+        if 'Result' in gateways and gateways['Result']['Items']:
+            api_gateway_id = gateways['Result']['Items'][0]['Id']
+        else:
+            raise ValueError("API gateway quota exceeded and no existing gateways found")
+    else:
+        raise ValueError(f"API gateway creation failed: {response}")
+    return api_gateway_id
+
+
+def wait_for_api_gateway(api_gateway_id, region):
+    timeout = 300
+    start_time = time.time()
+    check_interval = 5
+    while True:
+        response = list_api_gateways(region=region)
+        if 'Result' in response:
+            for gateway in response['Result']['Items']:
+                if gateway['Id'] == api_gateway_id:
+                    if gateway['Status'] == "Creating":
+                        print("API Gateway is still creating...")
+                        break
+                    elif gateway['Status'] == "Running":
+                        print("API Gateway created successfully.")
+                        return
+                    else:
+                        raise ValueError(f"API Gateway creation failed: {gateway}")
+        if time.time() - start_time > timeout:
+            raise TimeoutError("API Gateway creation timed out")
+        time.sleep(check_interval)
+
+
+def ensure_gateway_service_created(api_gateway_id, region):
+    response = create_gateway_service(gateway_id=api_gateway_id, region=region)
+    if 'Result' in response:
+        return response['Result']['Id']
+    raise ValueError(f"Failed to create gateway service: {response.get('Error', {}).get('Message')}")
+
+
+def bind_gateway_trigger(function_id, api_gateway_id, service_id, region):
+    trigger = create_api_gateway_trigger(
+        function_id=function_id,
+        api_gateway_id=api_gateway_id,
+        service_id=service_id,
+        region=region
+    )
+    if 'Result' in trigger:
+        service_response = get_gateway_service(service_id=service_id)
+        if 'Result' in service_response:
+            print(f"Gateway service created successfully. {json.dumps(service_response)}")
+            result = {
+                "GatewayService": service_response['Result']['GatewayService'],
+                "FunctionId": function_id,
+                "ApiGatewayId": api_gateway_id,
+            }
+            print(json.dumps(result))
+            return json.dumps(result)
+    raise ValueError("Function deployment failed")
+
+
+def get_gateway_service(service_id: str) -> str:
+    body = {"Id": service_id}
+    now = datetime.datetime.utcnow()
+    try:
+        ak, sk, token = get_authorization_credentials(mcp.get_context())
+    except ValueError as e:
+        raise ValueError(f"Authorization failed: {str(e)}")
+
+    try:
+        return request("POST", now, {}, {}, ak, sk, token, "GetGatewayService", json.dumps(body))
+    except Exception as e:
+        return f"Failed to retrieve gateway service with id {service_id}: {str(e)}"
